@@ -60,7 +60,7 @@ def scan_gaps(df: pd.DataFrame) -> list[dict]:
             continue
 
         close_chg     = (cur_close - prev_close) / prev_close * 100
-        future_closes = [float(closes[i+j]) for j in range(1, 6) if i+j < n]
+        future_closes = [float(closes[i+j]) for j in range(1, 21) if i+j < n]  # 最多20根
 
         gaps.append({
             "bar_idx":       i,
@@ -99,12 +99,13 @@ def analyze_gap_stats(gaps: list[dict], df: pd.DataFrame) -> dict:
                 'count': 0, 'avg_size': 0,
                 'fill_rate': 0, 'avg_fill_bars': 0,
                 'avg_after1': 0, 'avg_after3': 0, 'avg_after5': 0,
+                'avg_after10': 0, 'avg_after20': 0,
                 'continue_rate': 0,
             }
 
         fill_count     = 0
         fill_bars_list = []
-        after1_list, after3_list, after5_list = [], [], []
+        after1_list, after3_list, after5_list, after10_list, after20_list = [], [], [], [], []
         continue_count = 0
 
         for g in gap_list:
@@ -116,11 +117,15 @@ def analyze_gap_stats(gaps: list[dict], df: pd.DataFrame) -> dict:
             # 後市漲跌（第N根收盤 vs 跳空當根收盤）
             fc = g['future_closes']
             if len(fc) >= 1:
-                after1_list.append((fc[0] - c0) / c0 * 100)
+                after1_list.append((fc[0]  - c0) / c0 * 100)
             if len(fc) >= 3:
-                after3_list.append((fc[2] - c0) / c0 * 100)
+                after3_list.append((fc[2]  - c0) / c0 * 100)
             if len(fc) >= 5:
-                after5_list.append((fc[4] - c0) / c0 * 100)
+                after5_list.append((fc[4]  - c0) / c0 * 100)
+            if len(fc) >= 10:
+                after10_list.append((fc[9]  - c0) / c0 * 100)
+            if len(fc) >= 20:
+                after20_list.append((fc[19] - c0) / c0 * 100)
 
             # 次根延續率
             if len(fc) >= 1:
@@ -150,9 +155,11 @@ def analyze_gap_stats(gaps: list[dict], df: pd.DataFrame) -> dict:
             'avg_size':       float(np.mean([g['gap_size'] for g in gap_list])),
             'fill_rate':      fill_count / cnt * 100,
             'avg_fill_bars':  float(np.mean(fill_bars_list)) if fill_bars_list else 0,
-            'avg_after1':     float(np.mean(after1_list))    if after1_list  else 0,
-            'avg_after3':     float(np.mean(after3_list))    if after3_list  else 0,
-            'avg_after5':     float(np.mean(after5_list))    if after5_list  else 0,
+            'avg_after1':     float(np.mean(after1_list))    if after1_list   else 0,
+            'avg_after3':     float(np.mean(after3_list))    if after3_list   else 0,
+            'avg_after5':     float(np.mean(after5_list))    if after5_list   else 0,
+            'avg_after10':    float(np.mean(after10_list))   if after10_list  else 0,
+            'avg_after20':    float(np.mean(after20_list))   if after20_list  else 0,
             'continue_rate':  continue_count / cnt * 100,
         }
 
@@ -187,7 +194,9 @@ def generate_gap_advice(stats: dict, current_price: float,
         lines.append(
             f"  後市：第1根 {up['avg_after1']:+.2f}% ／"
             f"第3根 {up['avg_after3']:+.2f}% ／"
-            f"第5根 {up['avg_after5']:+.2f}%（均相對跳空當根收盤）")
+            f"第5根 {up['avg_after5']:+.2f}% ／"
+            f"第10根 {up['avg_after10']:+.2f}% ／"
+            f"第20根 {up['avg_after20']:+.2f}%（均相對跳空當根收盤）")
 
     if down['count'] > 0:
         fill_char = "容易回補" if down['fill_rate'] > 60 else (
@@ -201,7 +210,9 @@ def generate_gap_advice(stats: dict, current_price: float,
         lines.append(
             f"  後市：第1根 {down['avg_after1']:+.2f}% ／"
             f"第3根 {down['avg_after3']:+.2f}% ／"
-            f"第5根 {down['avg_after5']:+.2f}%（均相對跳空當根收盤）")
+            f"第5根 {down['avg_after5']:+.2f}% ／"
+            f"第10根 {down['avg_after10']:+.2f}% ／"
+            f"第20根 {down['avg_after20']:+.2f}%（均相對跳空當根收盤）")
 
     lines.append("")
 
