@@ -780,6 +780,267 @@ with st.sidebar:
     </div>""", unsafe_allow_html=True)
 
 
+# ── 跳空歷史分析渲染 ──────────────────────────────────────────────────────────
+def _render_gap_history(df, ticker: str, interval: str):
+    """渲染完整跳空歷史分析區塊"""
+    from analysis.gap_analysis import scan_gaps, analyze_gap_stats, generate_gap_advice
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    gaps  = scan_gaps(df)
+    stats = analyze_gap_stats(gaps, df)
+
+    up_gaps   = stats['up_gaps']
+    down_gaps = stats['down_gaps']
+    total     = stats['total']
+
+    # ── 統計摘要卡片 ──────────────────────────────────────────────────────────
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    with sc1:
+        st.markdown(f"""<div class='metric-card' style='text-align:center;border-left:3px solid #3d8c5f'>
+          <div class='metric-label'>向上跳空次數</div>
+          <div class='metric-value' style='color:#3d8c5f;font-size:1.6rem'>{len(up_gaps)}</div>
+          <div class='metric-sub' style='color:#9e9890'>Gap Up ↑</div>
+        </div>""", unsafe_allow_html=True)
+    with sc2:
+        st.markdown(f"""<div class='metric-card' style='text-align:center;border-left:3px solid #c0392b'>
+          <div class='metric-label'>向下跳空次數</div>
+          <div class='metric-value' style='color:#c0392b;font-size:1.6rem'>{len(down_gaps)}</div>
+          <div class='metric-sub' style='color:#9e9890'>Gap Down ↓</div>
+        </div>""", unsafe_allow_html=True)
+    with sc3:
+        up_fill = stats['up']['fill_rate'] if stats['up']['count'] > 0 else 0
+        down_fill = stats['down']['fill_rate'] if stats['down']['count'] > 0 else 0
+        avg_fill = (up_fill + down_fill) / 2 if total > 0 else 0
+        fill_col = "#3d8c5f" if avg_fill < 50 else "#c0392b"
+        st.markdown(f"""<div class='metric-card' style='text-align:center;border-left:3px solid {fill_col}'>
+          <div class='metric-label'>平均回補率</div>
+          <div class='metric-value' style='color:{fill_col};font-size:1.6rem'>{avg_fill:.0f}%</div>
+          <div class='metric-sub' style='color:#9e9890'>20根內</div>
+        </div>""", unsafe_allow_html=True)
+    with sc4:
+        st.markdown(f"""<div class='metric-card' style='text-align:center;border-left:3px solid #b07d2e'>
+          <div class='metric-label'>總跳空次數</div>
+          <div class='metric-value' style='color:#b07d2e;font-size:1.6rem'>{total}</div>
+          <div class='metric-sub' style='color:#9e9890'>{interval} 週期</div>
+        </div>""", unsafe_allow_html=True)
+
+    if total == 0:
+        st.info("當前時間週期內未偵測到符合定義的跳空缺口（今低 > 前高 / 今高 < 前低）")
+        return
+
+    st.markdown("")
+
+    # ── 後市統計表 ────────────────────────────────────────────────────────────
+    st.markdown("<div class='section-heading' style='font-size:.85rem'>📊 跳空後市統計</div>",
+                unsafe_allow_html=True)
+    stat_cols = st.columns(2)
+
+    for col_widget, direction, d_stats, color, icon in [
+        (stat_cols[0], "向上跳空 Gap Up ↑",   stats['up'],   "#3d8c5f", "🟢"),
+        (stat_cols[1], "向下跳空 Gap Down ↓", stats['down'], "#c0392b", "🔴"),
+    ]:
+        with col_widget:
+            if d_stats['count'] == 0:
+                st.markdown(f"<div class='white-card'><span style='color:#9e9890'>無{direction}記錄</span></div>",
+                            unsafe_allow_html=True)
+                continue
+            rows = "".join([
+                _row("發生次數",      str(d_stats['count'])),
+                _row("平均缺口幅度",  f"{d_stats['avg_size']:.2f}%"),
+                _row("20根內回補率",  f"{d_stats['fill_rate']:.0f}%"),
+                _row("平均回補時間",  f"{d_stats['avg_fill_bars']:.1f} 根" if d_stats['avg_fill_bars'] > 0 else "未回補"),
+                _row("次根延續率",    f"{d_stats['continue_rate']:.0f}%"),
+                _row("次根平均漲跌",  f"{d_stats['avg_after1']:+.2f}%"),
+                _row("3根後平均漲跌", f"{d_stats['avg_after3']:+.2f}%"),
+                _row("5根後平均漲跌", f"{d_stats['avg_after5']:+.2f}%"),
+            ])
+            st.markdown(
+                f"<div class='white-card'>"
+                f"<div style='font-size:.75rem;font-weight:700;color:{color};"
+                f"margin-bottom:8px'>{icon} {direction}</div>{rows}</div>",
+                unsafe_allow_html=True)
+
+    # ── K線圖：標記所有跳空 ───────────────────────────────────────────────────
+    st.markdown("<div class='section-heading' style='font-size:.85rem'>📈 跳空位置走勢圖</div>",
+                unsafe_allow_html=True)
+
+    dates  = df.index
+    opens  = df['Open'].values
+    highs  = df['High'].values
+    lows   = df['Low'].values
+    closes = df['Close'].values
+    vols   = df['Volume'].values
+    n      = len(df)
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.03, row_heights=[0.72, 0.28])
+
+    # K線
+    fig.add_trace(go.Candlestick(
+        x=dates, open=opens, high=highs, low=lows, close=closes,
+        name="K線",
+        increasing_line_color='#3d8c5f', decreasing_line_color='#c0392b',
+        increasing_fillcolor='#3d8c5f',  decreasing_fillcolor='#c0392b',
+        line_width=1,
+    ), row=1, col=1)
+
+    # 標記跳空區域（矩形缺口）
+    for g in gaps:
+        i   = g['bar_idx']
+        col = 'rgba(61,140,95,0.15)' if g['direction']=='up' else 'rgba(192,57,43,0.15)'
+        bdr = 'rgba(61,140,95,0.6)'  if g['direction']=='up' else 'rgba(192,57,43,0.6)'
+        fig.add_hrect(y0=g['gap_low'], y1=g['gap_high'], row=1, col=1,
+                      fillcolor=col, line_width=1, line_color=bdr, opacity=0.8)
+
+    # 跳空箭頭標記
+    for g in gaps[-30:]:  # 只標最近30個避免過密
+        i    = g['bar_idx']
+        if i >= n: continue
+        d    = g['direction']
+        icon = "▲" if d == 'up' else "▼"
+        ypos = lows[i]*0.994  if d=='up'  else highs[i]*1.006
+        col  = '#3d8c5f'      if d=='up'  else '#c0392b'
+        tpos = "bottom center" if d=='up' else "top center"
+        fig.add_trace(go.Scatter(
+            x=[dates[i]], y=[ypos],
+            mode='markers+text',
+            marker=dict(symbol='triangle-up' if d=='up' else 'triangle-down',
+                        color=col, size=10),
+            text=[f"{icon}{g['gap_size']:.1f}%"],
+            textposition=tpos,
+            textfont=dict(size=8, color=col, family='IBM Plex Mono'),
+            showlegend=False,
+        ), row=1, col=1)
+
+    # 成交量
+    avg_v = float(np.mean(vols[-20:])) if n >= 20 else float(np.mean(vols))
+    vol_colors = []
+    for i in range(n):
+        is_gap_bar = any(g['bar_idx']==i for g in gaps)
+        if is_gap_bar:
+            g_this = next(g for g in gaps if g['bar_idx']==i)
+            vol_colors.append('rgba(61,140,95,0.9)' if g_this['direction']=='up'
+                              else 'rgba(192,57,43,0.9)')
+        elif closes[i] >= opens[i]:
+            vol_colors.append('rgba(61,140,95,0.45)')
+        else:
+            vol_colors.append('rgba(192,57,43,0.45)')
+
+    fig.add_trace(go.Bar(x=dates, y=vols, name="成交量",
+                         marker_color=vol_colors), row=2, col=1)
+    fig.add_trace(go.Scatter(x=dates, y=[avg_v]*n, name="Vol MA20",
+                             line=dict(color='#b07d2e', width=1, dash='dot'),
+                             opacity=0.7), row=2, col=1)
+
+    fig.update_layout(
+        plot_bgcolor='#ffffff', paper_bgcolor='#f9f7f4',
+        height=520, margin=dict(l=60, r=60, t=36, b=8),
+        font=dict(family='IBM Plex Mono', color='#6b6560', size=9),
+        legend=dict(bgcolor='rgba(255,255,255,.8)', bordercolor='#ede9e3',
+                    borderwidth=1, font=dict(size=8), orientation='h', x=0, y=1.04),
+        hovermode='x unified', xaxis_rangeslider_visible=False,
+        title=dict(text=f'{ticker} 跳空缺口分佈（綠=Gap Up，紅=Gap Down）',
+                   font=dict(size=12, color='#6b6560'), x=0.01),
+    )
+    axis_style = dict(gridcolor='#ede9e3', linecolor='#e0dbd2',
+                      tickfont=dict(size=8, color='#9e9890'))
+    fig.update_xaxes(**axis_style)
+    fig.update_yaxes(**axis_style)
+    fig.update_yaxes(tickprefix='$', row=1, col=1)
+
+    # rangebreaks
+    intraday = interval in {"1m","5m","15m","30m","1h"}
+    if intraday:
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat","mon"]),
+                                       dict(bounds=[16,9.5], pattern="hour")])
+    else:
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat","mon"])])
+
+    st.plotly_chart(fig, use_container_width=True,
+                    config={"scrollZoom": True, "displaylogo": False})
+
+    # ── 詳細記錄表格 ──────────────────────────────────────────────────────────
+    if gaps:
+        st.markdown("<div class='section-heading' style='font-size:.85rem'>📋 跳空詳細記錄（最近20次）</div>",
+                    unsafe_allow_html=True)
+
+        recent_gaps = sorted(gaps, key=lambda x: x['bar_idx'], reverse=True)[:20]
+        table_rows = ""
+        for g in recent_gaps:
+            d     = g['direction']
+            color = "#3d8c5f" if d=='up' else "#c0392b"
+            icon  = "▲ Gap Up" if d=='up' else "▼ Gap Down"
+            bg    = "#f0f9f4" if d=='up' else "#fdf0f0"
+            date_str = str(g['date'])[:16]
+            vol_r = g['vol_ratio']
+            vol_col = "#3d8c5f" if vol_r > 1.5 else ("#c0392b" if vol_r < 0.7 else "#6b6560")
+
+            table_rows += (
+                f"<tr style='background:{bg}'>"
+                f"<td style='padding:6px 10px;font-size:.78rem;color:#6b6560'>{date_str}</td>"
+                f"<td style='padding:6px 10px;font-weight:700;color:{color}'>{icon}</td>"
+                f"<td style='padding:6px 10px;font-family:IBM Plex Mono,monospace;font-size:.78rem'>"
+                f"${g['cur_close']:.2f}</td>"
+                f"<td style='padding:6px 10px;color:{color};font-family:IBM Plex Mono,monospace;font-size:.78rem'>"
+                f"+{g['gap_size']:.2f}%</td>"
+                f"<td style='padding:6px 10px;color:{('#3d8c5f' if g['close_chg']>=0 else '#c0392b')};"
+                f"font-family:IBM Plex Mono,monospace;font-size:.78rem'>"
+                f"{g['close_chg']:+.2f}%</td>"
+                f"<td style='padding:6px 10px;font-family:IBM Plex Mono,monospace;font-size:.78rem'>"
+                f"{g['volume']/1e6:.1f}M</td>"
+                f"<td style='padding:6px 10px;color:{vol_col};"
+                f"font-family:IBM Plex Mono,monospace;font-size:.78rem'>"
+                f"{vol_r:.1f}x</td>"
+                f"</tr>"
+            )
+
+        st.markdown(
+            f"<div style='border:1px solid #e0dbd2;border-radius:8px;overflow:hidden'>"
+            f"<table style='width:100%;border-collapse:collapse'>"
+            f"<thead><tr style='background:#f9f7f4;border-bottom:1.5px solid #e0dbd2'>"
+            f"<th style='padding:7px 10px;text-align:left;font-size:.72rem;color:#9e9890;font-weight:600'>時間</th>"
+            f"<th style='padding:7px 10px;text-align:left;font-size:.72rem;color:#9e9890;font-weight:600'>方向</th>"
+            f"<th style='padding:7px 10px;text-align:left;font-size:.72rem;color:#9e9890;font-weight:600'>收盤價</th>"
+            f"<th style='padding:7px 10px;text-align:left;font-size:.72rem;color:#9e9890;font-weight:600'>缺口幅度</th>"
+            f"<th style='padding:7px 10px;text-align:left;font-size:.72rem;color:#9e9890;font-weight:600'>當根漲跌</th>"
+            f"<th style='padding:7px 10px;text-align:left;font-size:.72rem;color:#9e9890;font-weight:600'>成交量</th>"
+            f"<th style='padding:7px 10px;text-align:left;font-size:.72rem;color:#9e9890;font-weight:600'>量比</th>"
+            f"</tr></thead>"
+            f"<tbody>{table_rows}</tbody>"
+            f"</table></div>",
+            unsafe_allow_html=True
+        )
+
+    # ── 主觀交易建議 ──────────────────────────────────────────────────────────
+    st.markdown("<div class='section-heading' style='font-size:.85rem'>💡 跳空交易建議</div>",
+                unsafe_allow_html=True)
+
+    # 找最近一次跳空（最新一根）
+    last_gap = None
+    if gaps:
+        latest_idx = max(g['bar_idx'] for g in gaps)
+        n_total = len(df)
+        # 只有在最近5根內才算「最新跳空」
+        recent = [g for g in gaps if g['bar_idx'] >= n_total - 5]
+        last_gap = max(recent, key=lambda x: x['bar_idx']) if recent else None
+
+    current_price = float(df['Close'].iloc[-1])
+    advice_text = generate_gap_advice(stats, current_price, last_gap, ticker)
+
+    advice_color = "#3d8c5f" if last_gap and last_gap['direction']=='up' else (
+                   "#c0392b" if last_gap and last_gap['direction']=='down' else "#b07d2e")
+    st.markdown(
+        f"<div style='background:#f9f7f4;border:1px solid #e0dbd2;"
+        f"border-left:3px solid {advice_color};"
+        f"border-radius:0 8px 8px 0;padding:1rem 1.2rem;"
+        f"font-size:.86rem;line-height:1.9;color:#1a1a1a;"
+        f"white-space:pre-wrap;font-family:Noto Sans TC,sans-serif'>"
+        f"{advice_text}</div>",
+        unsafe_allow_html=True
+    )
+
+
 # ── 跳空監控核心 ──────────────────────────────────────────────────────────────
 def _detect_gap(ticker: str, interval: str, bar_count: int) -> dict | None:
     """
@@ -1193,6 +1454,10 @@ def render_ticker(ctx: dict):
             xaxis=dict(showgrid=False,tickfont=dict(size=8,color='#9e9890')),
             yaxis=dict(gridcolor='#ede9e3',tickfont=dict(size=8,color='#9e9890')))
         st.plotly_chart(efig, use_container_width=True)
+
+    # ── 跳空歷史分析區塊 ─────────────────────────────────────────────────────
+    st.markdown("<div class='section-heading'>🕳️ 跳空歷史分析</div>", unsafe_allow_html=True)
+    _render_gap_history(df, ticker, interval)
 
     # Telegram signal alert (BUY/SELL) - 純文字格式，無 HTML
     if tg_token and tg_chat_id and sig in ('BUY','SELL'):
