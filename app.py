@@ -686,31 +686,103 @@ with st.sidebar:
 
     # ── 股票池管理 ────────────────────────────────────────────────────────────
     st.markdown("**股票池**")
-    new_tk = st.text_input("新增股票代號", placeholder="輸入代號按 Enter",
-                           label_visibility="visible", key="new_tk_input").upper().strip()
-    if new_tk and new_tk not in st.session_state.stock_list:
-        if st.button("➕ 加入股票池", use_container_width=True, key="add_tk"):
-            st.session_state.stock_list.append(new_tk)
-            st.rerun()
 
-    # 顯示股票池 + 刪除按鈕
-    for tk in list(st.session_state.stock_list):
-        mon_on = st.session_state.monitors.get(tk, {}).get("active", False)
-        badge  = "🔔" if mon_on else "○"
-        cached = "✓" if tk in st.session_state.cached else " "
-        col1, col2 = st.columns([4, 1])
-        with col1:
+    # ── 批量輸入 ──────────────────────────────────────────────────────────────
+    batch_input = st.text_input(
+        "批量輸入（逗號分隔）",
+        placeholder="TSLA, AAPL, AMZN, META, ...",
+        label_visibility="visible",
+        key="batch_tk_input"
+    )
+
+    if batch_input.strip():
+        # 解析：支援逗號、空格、換行、中文逗號等分隔
+        import re as _re
+        raw_list = _re.split('[, \t\n\r\u3001\uff0c]+', batch_input.strip())
+        # 清理：轉大寫、只保留字母數字點橫線（合法股票代號字符）
+        parsed = [_re.sub(r'[^A-Z0-9.-]', '', t.upper().strip())
+                  for t in raw_list]
+        parsed = [t for t in parsed if 1 <= len(t) <= 10]  # 長度合理
+
+        already  = [t for t in parsed if t in st.session_state.stock_list]
+        to_add   = [t for t in parsed if t not in st.session_state.stock_list]
+        # 去重
+        seen = set(); to_add_dedup = []
+        for t in to_add:
+            if t not in seen:
+                seen.add(t); to_add_dedup.append(t)
+        to_add = to_add_dedup
+
+        # 結果預覽
+        if to_add or already:
+            preview_parts = []
+            if to_add:
+                preview_parts.append(
+                    f"<span style='color:#3d8c5f'>✅ 新加入 {len(to_add)} 個：{', '.join(to_add)}</span>")
+            if already:
+                preview_parts.append(
+                    f"<span style='color:#9e9890'>⚠️ 已存在 {len(already)} 個：{', '.join(already)}</span>")
             st.markdown(
-                f"<div style='font-family:IBM Plex Mono,monospace;font-size:.8rem;"
-                f"padding:3px 0;color:{'#3d8c5f' if mon_on else '#1a1a1a'}'>"
-                f"{badge} {tk} <span style='color:#9e9890;font-size:.68rem'>[{cached}]</span></div>",
+                "<div style='font-size:.72rem;line-height:1.7;padding:.3rem 0'>" +
+                "<br>".join(preview_parts) + "</div>",
                 unsafe_allow_html=True)
-        with col2:
-            if st.button("✕", key=f"del_{tk}", help=f"移除 {tk}"):
-                st.session_state.stock_list.remove(tk)
-                st.session_state.cached.pop(tk, None)
-                st.session_state.monitors.pop(tk, None)
+
+        if to_add:
+            if st.button(f"➕ 批量加入 {len(to_add)} 支", use_container_width=True,
+                         key="batch_add_btn"):
+                st.session_state.stock_list.extend(to_add)
                 st.rerun()
+        elif parsed:
+            st.caption("所有代號已在股票池中")
+
+    # ── 單個快速加入 ──────────────────────────────────────────────────────────
+    with st.expander("＋ 單個加入", expanded=False):
+        new_tk = st.text_input("股票代號", placeholder="例如 GOOGL",
+                               label_visibility="collapsed",
+                               key="new_tk_input").upper().strip()
+        import re as _re2
+        new_tk = _re2.sub(r'[^A-Z0-9.\-]', '', new_tk)
+        if new_tk and new_tk not in st.session_state.stock_list and 1 <= len(new_tk) <= 10:
+            if st.button("➕ 加入", use_container_width=True, key="add_tk"):
+                st.session_state.stock_list.append(new_tk)
+                st.rerun()
+        elif new_tk and new_tk in st.session_state.stock_list:
+            st.caption(f"{new_tk} 已在股票池中")
+
+    # ── 股票池列表 + 刪除 + 清空 ──────────────────────────────────────────────
+    cur_pool = st.session_state.stock_list
+    if cur_pool:
+        st.markdown(
+            f"<div style='font-size:.68rem;color:#9e9890;margin:.3rem 0 .2rem'>"
+            f"股票池（{len(cur_pool)} 支）</div>",
+            unsafe_allow_html=True)
+        for tk in list(cur_pool):
+            mon_on = st.session_state.monitors.get(tk, {}).get("active", False)
+            badge  = "🔔" if mon_on else "○"
+            cached = "✓" if tk in st.session_state.cached else " "
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.markdown(
+                    f"<div style='font-family:IBM Plex Mono,monospace;font-size:.8rem;"
+                    f"padding:2px 0;color:{'#3d8c5f' if mon_on else '#1a1a1a'}'>"
+                    f"{badge} {tk} "
+                    f"<span style='color:#9e9890;font-size:.66rem'>[{cached}]</span></div>",
+                    unsafe_allow_html=True)
+            with col2:
+                if st.button("✕", key=f"del_{tk}", help=f"移除 {tk}"):
+                    st.session_state.stock_list.remove(tk)
+                    st.session_state.cached.pop(tk, None)
+                    st.session_state.monitors.pop(tk, None)
+                    st.rerun()
+
+        # 清空按鈕
+        if st.button("🗑️ 清空股票池", use_container_width=True, key="clear_pool"):
+            st.session_state.stock_list     = []
+            st.session_state.cached         = {}
+            st.session_state.monitors       = {}
+            st.session_state.gap_alerts     = {}
+            st.session_state.gap_monitor_fired = {}
+            st.rerun()
 
     st.markdown("---")
 
