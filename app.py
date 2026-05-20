@@ -960,14 +960,16 @@ def _render_gap_history(df, ticker: str, interval: str):
                             unsafe_allow_html=True)
                 continue
             rows = "".join([
-                _row("發生次數",      str(d_stats['count'])),
-                _row("平均缺口幅度",  f"{d_stats['avg_size']:.2f}%"),
-                _row("20根內回補率",  f"{d_stats['fill_rate']:.0f}%"),
-                _row("平均回補時間",  f"{d_stats['avg_fill_bars']:.1f} 根" if d_stats['avg_fill_bars'] > 0 else "未回補"),
-                _row("次根延續率",    f"{d_stats['continue_rate']:.0f}%"),
-                _row("次根平均漲跌",  f"{d_stats['avg_after1']:+.2f}%"),
-                _row("3根後平均漲跌", f"{d_stats['avg_after3']:+.2f}%"),
-                _row("5根後平均漲跌", f"{d_stats['avg_after5']:+.2f}%"),
+                _row("發生次數",       str(d_stats['count'])),
+                _row("平均缺口幅度",   f"{d_stats['avg_size']:.2f}%"),
+                _row("20根內回補率",   f"{d_stats['fill_rate']:.0f}%"),
+                _row("平均回補時間",   f"{d_stats['avg_fill_bars']:.1f} 根" if d_stats['avg_fill_bars'] > 0 else "未回補"),
+                _row("次根延續率",     f"{d_stats['continue_rate']:.0f}%"),
+                _row("第1根平均漲跌",  f"{d_stats['avg_after1']:+.2f}%"),
+                _row("第3根平均漲跌",  f"{d_stats['avg_after3']:+.2f}%"),
+                _row("第5根平均漲跌",  f"{d_stats['avg_after5']:+.2f}%"),
+                _row("第10根平均漲跌", f"{d_stats['avg_after10']:+.2f}%" if d_stats.get('avg_after10') != 0 or d_stats['count'] > 0 else "數據不足"),
+                _row("第20根平均漲跌", f"{d_stats['avg_after20']:+.2f}%" if d_stats.get('avg_after20') != 0 or d_stats['count'] > 0 else "數據不足"),
             ])
             st.markdown(
                 f"<div class='white-card'>"
@@ -1223,7 +1225,9 @@ def _detect_gaps_two_bars(ticker: str, interval: str, bar_count: int) -> list[di
                                 f"回補率 {u['fill_rate']:.0f}%"
                                 f"（平均 {u['avg_fill_bars']:.1f} 根）"
                                 f"｜次根均 {u['avg_after1']:+.2f}%"
-                                f"／5根後均 {u['avg_after5']:+.2f}%")
+                                f"／5根後均 {u['avg_after5']:+.2f}%"
+                                f"／10根後均 {u['avg_after10']:+.2f}%"
+                                f"／20根後均 {u['avg_after20']:+.2f}%")
 
                 found.append({
                     "ticker":    ticker,
@@ -1255,7 +1259,9 @@ def _detect_gaps_two_bars(ticker: str, interval: str, bar_count: int) -> list[di
                                 f"回補率 {d['fill_rate']:.0f}%"
                                 f"（平均 {d['avg_fill_bars']:.1f} 根）"
                                 f"｜次根均 {d['avg_after1']:+.2f}%"
-                                f"／5根後均 {d['avg_after5']:+.2f}%")
+                                f"／5根後均 {d['avg_after5']:+.2f}%"
+                                f"／10根後均 {d['avg_after10']:+.2f}%"
+                                f"／20根後均 {d['avg_after20']:+.2f}%")
 
                 found.append({
                     "ticker":    ticker,
