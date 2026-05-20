@@ -1042,68 +1042,136 @@ def _render_gap_history(df, ticker: str, interval: str):
 
 
 # ── 跳空監控核心 ──────────────────────────────────────────────────────────────
-def _detect_gap(ticker: str, interval: str, bar_count: int) -> dict | None:
+def _detect_gaps_two_bars(ticker: str, interval: str, bar_count: int) -> list[dict]:
     """
-    獲取最新2根K線，判斷是否有跳空缺口。
-    Gap Up:   current_low  > prev_high  → 綠色
-    Gap Down: current_high < prev_low   → 紅色
+    監控最新兩根 K 線，任何一根出現跳空即記錄。
+    檢查：
+      pair A : bar[-1] vs bar[-2]  （最新根）
+      pair B : bar[-2] vs bar[-3]  （前一根）
+    回傳 list，可能含 0~2 個跳空事件。
     """
     try:
         import yfinance as yf
         from analysis.data_fetcher import INTERVAL_PERIOD_MAP, _filter_trading_hours
+        from analysis.gap_analysis import scan_gaps, analyze_gap_stats
+
         period = INTERVAL_PERIOD_MAP.get(interval, "1d")
         df = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=True)
-        if df is None or len(df) < 2:
-            return None
+        if df is None or len(df) < 3:
+            return []
         df = df.dropna()
         if interval in {"1m","5m","15m","30m","1h"}:
             df = _filter_trading_hours(df, interval)
         df = df[df["Volume"] > 0]
-        if len(df) < 2:
-            return None
+        if len(df) < 3:
+            return []
 
-        cur  = df.iloc[-1]
-        prev = df.iloc[-2]
-        cur_high  = float(cur['High'])
-        cur_low   = float(cur['Low'])
-        prev_high = float(prev['High'])
-        prev_low  = float(prev['Low'])
-        cur_close = float(cur['Close'])
-        cur_time  = str(df.index[-1])[:16]
+        # 計算歷史統計（供 Telegram 附上回補率）
+        try:
+            all_gaps = scan_gaps(df)
+            stats    = analyze_gap_stats(all_gaps, df)
+        except Exception:
+            stats = None
 
-        if cur_low > prev_high:
-            gap_pct = (cur_low - prev_high) / prev_high * 100
-            return {
-                "ticker":    ticker,
-                "direction": "up",
-                "icon":      "🟢",
-                "label":     "向上跳空 Gap Up ↑",
-                "detail":    f"今低 ${cur_low:.2f} > 前高 ${prev_high:.2f}",
-                "pct":       gap_pct,
-                "cur_close": cur_close,
-                "cur_time":  cur_time,
-            }
-        elif cur_high < prev_low:
-            gap_pct = (prev_low - cur_high) / prev_low * 100
-            return {
-                "ticker":    ticker,
-                "direction": "down",
-                "icon":      "🔴",
-                "label":     "向下跳空 Gap Down ↓",
-                "detail":    f"今高 ${cur_high:.2f} < 前低 ${prev_low:.2f}",
-                "pct":       gap_pct,
-                "cur_close": cur_close,
-                "cur_time":  cur_time,
-            }
-        return None   # 無跳空
+        found = []
+        # 檢查最近兩對 K 線
+        for offset in [1, 2]:      # offset=1 → bar[-1]/bar[-2]; offset=2 → bar[-2]/bar[-3]
+            if len(df) < offset + 2:
+                continue
+            cur  = df.iloc[-(offset)]
+            prev = df.iloc[-(offset+1)]
+
+            cur_high  = float(cur['High'])
+            cur_low   = float(cur['Low'])
+            cur_close = float(cur['Close'])
+            cur_open  = float(cur['Open'])
+            cur_vol   = float(cur['Volume'])
+            prev_high = float(prev['High'])
+            prev_low  = float(prev['Low'])
+            cur_time  = str(df.index[-offset])[:16]
+
+            # 均量
+            avg_v = float(df['Volume'].rolling(20).mean().iloc[-(offset)]) or 1.0
+            vol_ratio = cur_vol / avg_v if avg_v > 0 else 1.0
+
+            bar_label = "最新根（-1）" if offset == 1 else "前一根（-2）"
+
+            if cur_low > prev_high:
+                pct = (cur_low - prev_high) / prev_high * 100
+                gap_low, gap_high = prev_high, cur_low
+                direction = "up"
+
+                # 歷史統計
+                hist_txt = ""
+                if stats and stats['up']['count'] > 0:
+                    u = stats['up']
+                    hist_txt = (f"歷史統計（{u['count']}次）："
+                                f"回補率 {u['fill_rate']:.0f}%"
+                                f"（平均 {u['avg_fill_bars']:.1f} 根）"
+                                f"｜次根均 {u['avg_after1']:+.2f}%"
+                                f"／5根後均 {u['avg_after5']:+.2f}%")
+
+                found.append({
+                    "ticker":    ticker,
+                    "direction": direction,
+                    "bar_label": bar_label,
+                    "icon":      "🟢",
+                    "label":     "向上跳空 Gap Up ↑",
+                    "gap_low":   gap_low,
+                    "gap_high":  gap_high,
+                    "detail":    f"低 ${cur_low:.2f} > 前高 ${prev_high:.2f}",
+                    "pct":       pct,
+                    "cur_close": cur_close,
+                    "cur_open":  cur_open,
+                    "vol_ratio": vol_ratio,
+                    "cur_time":  cur_time,
+                    "hist_txt":  hist_txt,
+                    "dedup_key": f"{ticker}_up_{cur_time}",
+                })
+
+            elif cur_high < prev_low:
+                pct = (prev_low - cur_high) / prev_low * 100
+                gap_low, gap_high = cur_high, prev_low
+                direction = "down"
+
+                hist_txt = ""
+                if stats and stats['down']['count'] > 0:
+                    d = stats['down']
+                    hist_txt = (f"歷史統計（{d['count']}次）："
+                                f"回補率 {d['fill_rate']:.0f}%"
+                                f"（平均 {d['avg_fill_bars']:.1f} 根）"
+                                f"｜次根均 {d['avg_after1']:+.2f}%"
+                                f"／5根後均 {d['avg_after5']:+.2f}%")
+
+                found.append({
+                    "ticker":    ticker,
+                    "direction": direction,
+                    "bar_label": bar_label,
+                    "icon":      "🔴",
+                    "label":     "向下跳空 Gap Down ↓",
+                    "gap_low":   gap_low,
+                    "gap_high":  gap_high,
+                    "detail":    f"高 ${cur_high:.2f} < 前低 ${prev_low:.2f}",
+                    "pct":       pct,
+                    "cur_close": cur_close,
+                    "cur_open":  cur_open,
+                    "vol_ratio": vol_ratio,
+                    "cur_time":  cur_time,
+                    "hist_txt":  hist_txt,
+                    "dedup_key": f"{ticker}_down_{cur_time}",
+                })
+
+        return found
+
     except Exception:
-        return None
+        return []
 
 
 def _run_gap_monitor(stock_list: list, interval: str, bar_count: int):
     """
-    遍歷所有股票，偵測跳空缺口，觸發時發 Telegram。
-    在每次 rerun 時調用。
+    遍歷所有股票，監控最新兩根 K 線跳空。
+    bar[-1] vs bar[-2]，bar[-2] vs bar[-3] 各自獨立檢查。
+    附帶歷史回補率統計，讓用戶收到 Telegram 即知操作方向。
     """
     if not st.session_state.gap_monitor_on:
         return
@@ -1117,41 +1185,81 @@ def _run_gap_monitor(stock_list: list, interval: str, bar_count: int):
     import datetime as _dt
 
     for ticker in stock_list:
-        gap = _detect_gap(ticker, interval, bar_count)
-        if gap is None:
+        gaps = _detect_gaps_two_bars(ticker, interval, bar_count)
+        if not gaps:
             continue
 
-        # 去重 key：ticker + direction + 時間戳（精確到分鐘）
-        dedup_key = f"{ticker}_{gap['direction']}_{gap['cur_time']}"
-        if dedup_key in st.session_state.gap_monitor_fired:
-            continue
+        for gap in gaps:
+            dedup_key = gap['dedup_key']
+            if dedup_key in st.session_state.gap_monitor_fired:
+                continue
 
-        # 記錄觸發
-        st.session_state.gap_monitor_fired[dedup_key] = True
+            # 記錄已觸發
+            st.session_state.gap_monitor_fired[dedup_key] = True
 
-        # 發 Telegram
-        nl  = chr(10)
-        sep = chr(8212) * 20
-        now = _dt.datetime.now().strftime('%Y-%m-%d %H:%M')
-        msg = nl.join([
-            gap['icon'] + " *" + ticker + " 跳空警報*",
-            sep,
-            "方向：*" + gap['label'] + "*",
-            "數值：" + gap['detail'],
-            "幅度：+" + f"{gap['pct']:.2f}%",
-            "收盤：$" + f"{gap['cur_close']:.2f}",
-            "時間：" + gap['cur_time'],
-            "週期：" + interval,
-            sep,
-            "_SMC Pro · " + now + "_",
-        ])
-        send_telegram_alert(tg_t, tg_c, msg)
+            # ── 組裝 Telegram 訊息 ─────────────────────────────────────────
+            nl  = chr(10)
+            sep = chr(8212) * 22
+            now = _dt.datetime.now().strftime('%Y-%m-%d %H:%M')
 
-        # 頁面 toast 通知
-        st.toast(
-            f"{gap['icon']} {ticker} {gap['label']} +{gap['pct']:.2f}%",
-            icon="🚨"
-        )
+            # 缺口區間
+            gap_range = f"${gap['gap_low']:.2f} – ${gap['gap_high']:.2f}"
+
+            # 操作建議（根據歷史統計自動生成）
+            hist = gap.get('hist_txt', '')
+            if gap['direction'] == 'up':
+                if '回補率' in hist:
+                    # 從 hist_txt 提取回補率數字
+                    import re
+                    m = re.search('回補率 ([0-9]+)%', hist)
+                    fill_r = int(m.group(1)) if m else 50
+                    if fill_r >= 60:
+                        op_hint = f"⚠️ 歷史回補率高（{fill_r}%），建議等回補至缺口 {gap_range} 再做多"
+                    else:
+                        op_hint = f"🚀 歷史回補率低（{fill_r}%），可考慮順勢追多，止損缺口下沿 ${gap['gap_low']:.2f}"
+                else:
+                    op_hint = f"缺口區間 {gap_range}，等待價格在上沿 ${gap['gap_high']:.2f} 站穩確認"
+            else:
+                if '回補率' in hist:
+                    import re
+                    m = re.search('回補率 ([0-9]+)%', hist)
+                    fill_r = int(m.group(1)) if m else 50
+                    if fill_r >= 60:
+                        op_hint = f"⚠️ 歷史回補率高（{fill_r}%），可輕倉逆勢做多，目標回補缺口下沿 ${gap['gap_low']:.2f}"
+                    else:
+                        op_hint = f"🔻 歷史回補率低（{fill_r}%），建議順勢做空，止損缺口上沿 ${gap['gap_high']:.2f}"
+                else:
+                    op_hint = f"缺口區間 {gap_range}，等待確認方向後再入場"
+
+            lines = [
+                gap['icon'] + " *" + ticker + " 跳空警報*",
+                sep,
+                "觸發根：" + gap['bar_label'],
+                "方向：*" + gap['label'] + "*",
+                "缺口區間：" + gap_range,
+                "缺口幅度：+" + f"{gap['pct']:.2f}%",
+                "當根收盤：$" + f"{gap['cur_close']:.2f}",
+                "成交量比：" + f"{gap['vol_ratio']:.1f}x 均量",
+                "時間：" + gap['cur_time'],
+                "週期：" + interval,
+            ]
+            if hist:
+                lines += ["", "📊 " + hist]
+            lines += [
+                "",
+                "💡 " + op_hint,
+                sep,
+                "_SMC Pro · " + now + "_",
+            ]
+            msg = nl.join(lines)
+            send_telegram_alert(tg_t, tg_c, msg)
+
+            # 頁面 Toast
+            st.toast(
+                f"{gap['icon']} {ticker} {gap['bar_label']} {gap['label']} "
+                f"+{gap['pct']:.2f}%",
+                icon="🚨"
+            )
 
 
 # ── 計算單支股票 ───────────────────────────────────────────────────────────────
