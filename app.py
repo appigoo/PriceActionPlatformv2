@@ -730,11 +730,53 @@ with st.sidebar:
     refresh_sec = refresh_map[refresh_lbl]
 
     st.markdown("---")
-    st.markdown("**Telegram 通知（選填）**")
-    tg_token   = st.text_input("Bot Token",  type="password", placeholder="留空則不發送")
-    tg_chat_id = st.text_input("Chat ID",    placeholder="留空則不發送")
-    if tg_token:   st.session_state["_tg_token"] = tg_token
-    if tg_chat_id: st.session_state["_tg_chat"]  = tg_chat_id
+    st.markdown("**Telegram 通知**")
+
+    # ── 三層 fallback：Secrets → Session → 手動輸入 ─────────────────────────
+    # 層1：Streamlit Secrets
+    _secret_token   = st.secrets.get("TELEGRAM_BOT_TOKEN", "") if hasattr(st, "secrets") else ""
+    _secret_chat    = st.secrets.get("TELEGRAM_CHAT_ID",   "") if hasattr(st, "secrets") else ""
+    _secrets_loaded = bool(_secret_token and _secret_chat)
+
+    if _secrets_loaded:
+        # Secrets 已設定 → 直接使用，顯示提示，隱藏 input
+        tg_token   = _secret_token
+        tg_chat_id = _secret_chat
+        st.session_state["_tg_token"] = tg_token
+        st.session_state["_tg_chat"]  = tg_chat_id
+        st.markdown(
+            "<div style='background:#eaf4ee;border:1px solid #a8d5b8;"
+            "border-radius:7px;padding:.45rem .8rem;font-size:.72rem;"
+            "color:#2d6a4f;margin-bottom:.4rem'>"
+            "✅ 已從 Streamlit Secrets 載入<br>"
+            "<span style='color:#6b9e8a;font-family:IBM Plex Mono,monospace'>"
+            "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID</span></div>",
+            unsafe_allow_html=True
+        )
+    else:
+        # 層2/3：Session state 或手動輸入
+        _input_token   = st.text_input("Bot Token",  type="password",
+                                        placeholder="或在 Secrets 設定",
+                                        value=st.session_state.get("_tg_token",""))
+        _input_chat    = st.text_input("Chat ID",    placeholder="或在 Secrets 設定",
+                                        value=st.session_state.get("_tg_chat",""))
+        tg_token   = _input_token   or st.session_state.get("_tg_token", "")
+        tg_chat_id = _input_chat    or st.session_state.get("_tg_chat",  "")
+        if _input_token:   st.session_state["_tg_token"] = _input_token
+        if _input_chat:    st.session_state["_tg_chat"]  = _input_chat
+
+        # 提示如何設定 Secrets
+        with st.expander("如何用 Secrets 設定（更安全）", expanded=False):
+            _secrets_help = (
+                "**Streamlit Cloud 設定路徑：**"
+                "  你的 App → Settings → Secrets，加入："
+                "\n\n```toml"
+                "\nTELEGRAM_BOT_TOKEN = \"你的 Bot Token\""
+                "\nTELEGRAM_CHAT_ID   = \"你的 Chat ID\""
+                "\n```"
+                "\n\n本地開發：新增 `.streamlit/secrets.toml`，並將此檔加入 `.gitignore`。"
+            )
+            st.markdown(_secrets_help)
 
     # ── 跳空監控按鈕（自動刷新下方）────────────────────────────────────────
     gap_mon_on = st.session_state.gap_monitor_on
@@ -1297,8 +1339,9 @@ def render_ticker(ctx: dict):
     signals         = ctx["signals"]
     scores          = ctx["scores"]
     ai_text         = ctx["ai_text"]
-    tg_token        = ctx["tg_token"]
-    tg_chat_id      = ctx["tg_chat_id"]
+    # 優先用 session state 的最新值（可能已由 Secrets 更新）
+    tg_token   = st.session_state.get("_tg_token") or ctx.get("tg_token", "")
+    tg_chat_id = st.session_state.get("_tg_chat")  or ctx.get("tg_chat_id", "")
 
     latest    = df.iloc[-1];  prev = df.iloc[-2]
     price_chg = latest['Close'] - prev['Close']
